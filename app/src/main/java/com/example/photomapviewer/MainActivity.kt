@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.RectF
 import android.hardware.GeomagneticField
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -97,6 +98,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         var lat: Double? = null,
         var lon: Double? = null,
         var direction: Double? = null,
+        var comment: String = "",
         var isLoaded: Boolean = false,
         var debugStatus: String = ""
     )
@@ -123,9 +125,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     // モード管理
     private var isCameraMode = false
     
-    // ★ 分離された2つの状態
-    private var isGpsPowerOn = false    // GPS自体の電源 (トップボタン)
-    private var isMapAutoPan = false    // 地図の自動追従 (地図上の◎ボタン)
+    // GPS分離状態
+    private var isGpsPowerOn = false
+    private var isMapAutoPan = false
 
     // センサー・位置情報
     private lateinit var sensorManager: SensorManager
@@ -254,13 +256,35 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         topSection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 210.dp()).apply { topMargin = 6.dp() } }
         setupThumbGestureDetector()
-        thumbContainer = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT); setBackgroundColor(Color.BLACK); isClickable = true; isFocusable = true; setOnTouchListener { _, event -> gestureDetectorThumb.onTouchEvent(event); true } }
+        
+        thumbContainer = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+            isFocusable = true
+            setOnTouchListener { _, event -> gestureDetectorThumb.onTouchEvent(event); true }
+        }
         viewFinder = PreviewView(this).apply { layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT); visibility = View.GONE }
         thumbContainer.addView(viewFinder)
+        
         ivThumbnail = ImageView(this).apply { layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT); scaleType = ImageView.ScaleType.FIT_CENTER }
         thumbContainer.addView(ivThumbnail)
-        tvImageInfo = TextView(this).apply { setTextColor(Color.WHITE); textSize = 11f; setBackgroundColor(Color.parseColor("#99000000")); setPadding(6.dp(), 4.dp(), 6.dp(), 4.dp()); layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply { setMargins(6.dp(), 6.dp(), 6.dp(), 6.dp()) } }
+        
+        tvImageInfo = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 11f
+            setBackgroundColor(Color.parseColor("#99000000"))
+            setPadding(8.dp(), 6.dp(), 8.dp(), 6.dp())
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply { setMargins(6.dp(), 6.dp(), 6.dp(), 6.dp()) }
+            // 左上テキストの直接タップでもメモ編集ダイアログを開く
+            setOnClickListener {
+                if (!isCameraMode && photoList.isNotEmpty()) {
+                    showEditMemoDialog(currentIndex)
+                }
+            }
+        }
         thumbContainer.addView(tvImageInfo)
+        
         tvBgLoadStatus = TextView(this).apply { setTextColor(Color.parseColor("#BBBBBB")); textSize = 9f; setBackgroundColor(Color.parseColor("#66000000")); setPadding(4.dp(), 2.dp(), 4.dp(), 2.dp()); layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply { setMargins(6.dp(), 6.dp(), 6.dp(), 6.dp()) }; visibility = View.GONE }
         thumbContainer.addView(tvBgLoadStatus)
         topSection.addView(thumbContainer)
@@ -333,7 +357,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         accelerometer?.also { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         magnetometer?.also { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         
-        // スワイプキル等で裏でGPSが終了していた場合のUI復旧
         val prefEnabled = getSharedPreferences("app_settings", Context.MODE_PRIVATE).getBoolean("gps_enabled", false)
         if (isGpsPowerOn != prefEnabled) {
             toggleGpsPower(prefEnabled)
@@ -352,7 +375,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    // ★ 1. GPSメイン電源の管理 (完全分離)
+    // --- GPSメイン電源の管理 ---
     @SuppressLint("MissingPermission")
     private fun toggleGpsPower(enable: Boolean) {
         if (enable && ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
@@ -368,7 +391,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             ContextCompat.startForegroundService(this, Intent(this, GpsForegroundService::class.java))
             
             val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000).build()
-            locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) } // 重複登録防止
+            locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
             
             val callback = object : LocationCallback() {
                 override fun onLocationResult(locationResult: LocationResult) {
@@ -378,7 +401,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                         currentDeclination = geoField.declination
                         updateGnssHud()
                         
-                        // 自動追従がONの時のみ地図を動かす (分離ロジック)
                         if (isMapAutoPan && isMapReady) {
                             mapWebView.evaluateJavascript("moveToGpsLocation(${loc.latitude}, ${loc.longitude});", null)
                         }
@@ -401,7 +423,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
             gnssStatusCallback?.let { locationManager?.registerGnssStatusCallback(it, null) }
             
-            // 電源を入れた時は自動で追従モードもONにする
             setMapAutoPan(true)
         } else {
             btnGpsToggle.text = "📡 OFF"
@@ -422,18 +443,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             gpsAccuracy = -1.0f
             updateGnssHud()
             
-            // 電源を切った時は追従もOFFにする
             setMapAutoPan(false)
         }
     }
 
-    // ★ 2. 地図の自動追従 (パン) 管理
+    // --- 地図の自動追従 (パン) 管理 ---
     private fun setMapAutoPan(enable: Boolean) {
         isMapAutoPan = enable
         if (isMapReady) {
             mapWebView.evaluateJavascript("setGpsButtonActive($enable);", null)
         }
-        // GPSがOFFなのに◎が押された場合は、GPSも連動してONにする
         if (enable && !isGpsPowerOn) {
             toggleGpsPower(true)
         }
@@ -680,11 +699,28 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    // --- スワイプ検知 ---
+    // --- スワイプ＆余白タップ検知（黒帯判定） ---
+    private fun getImageDisplayedRect(imageView: ImageView): RectF {
+        val drawable = imageView.drawable ?: return RectF()
+        val viewWidth = imageView.width.toFloat()
+        val viewHeight = imageView.height.toFloat()
+        val dWidth = drawable.intrinsicWidth.toFloat()
+        val dHeight = drawable.intrinsicHeight.toFloat()
+        if (dWidth <= 0 || dHeight <= 0 || viewWidth <= 0 || viewHeight <= 0) return RectF()
+
+        val scale = minOf(viewWidth / dWidth, viewHeight / dHeight)
+        val actualW = dWidth * scale
+        val actualH = dHeight * scale
+        val left = (viewWidth - actualW) / 2f
+        val top = (viewHeight - actualH) / 2f
+        return RectF(left, top, left + actualW, top + actualH)
+    }
+
     private fun setupThumbGestureDetector() {
         gestureDetectorThumb = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             private val SWIPE_THRESHOLD = 50
             private val SWIPE_VELOCITY_THRESHOLD = 50
+
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
                 if (e1 == null) return false
                 if (isCameraMode || photoList.isEmpty()) return false
@@ -701,8 +737,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 }
                 return false
             }
+
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                if (!isCameraMode) openFullScreen()
+                if (isCameraMode || photoList.isEmpty()) return false
+                
+                // 画像の描画枠（レターボックス）内外を判定
+                val imgRect = getImageDisplayedRect(ivThumbnail)
+                if (imgRect.contains(e.x, e.y)) {
+                    // 写真本体をタップしたときは従来どおり全画面表示
+                    openFullScreen()
+                } else {
+                    // 周囲の黒い部分（余白）をタップしたときはメモ編集
+                    showEditMemoDialog(currentIndex)
+                }
                 return true
             }
         })
@@ -737,6 +784,58 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun navigateToAndRefreshFull(index: Int) {
         navigateTo(index)
         updateFullScreenImage()
+    }
+
+    // --- メモ編集ダイアログ & EXIF書き込み ---
+    private fun showEditMemoDialog(index: Int) {
+        val item = photoList.getOrNull(index) ?: return
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            hint = "メモを入力（露頭、土質、観測記録など）"
+            setText(item.comment)
+            setSelection(text.length)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("メモ編集")
+            .setMessage(item.name)
+            .setView(input)
+            .setPositiveButton("保存") { _, _ ->
+                val newComment = input.text.toString().trim()
+                saveMemoToPhoto(item, newComment)
+            }
+            .setNegativeButton("キャンセル", null)
+            .show()
+    }
+
+    private fun saveMemoToPhoto(item: PhotoItem, newComment: String) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                contentResolver.openFileDescriptor(item.uri, "rw")?.use { pfd ->
+                    val exif = ExifInterface(pfd.fileDescriptor)
+                    exif.setAttribute(ExifInterface.TAG_USER_COMMENT, newComment)
+                    exif.saveAttributes()
+                }
+
+                item.comment = newComment
+                
+                // メタデータキャッシュを即座に更新
+                val prefs = getSharedPreferences("exif_metadata_cache", Context.MODE_PRIVATE)
+                val cacheKey = "${item.name}_${item.lastModified}"
+                prefs.edit().putString(cacheKey, "${item.lat ?: ""},${item.lon ?: ""},${item.direction ?: ""},${newComment}").apply()
+
+                withContext(Dispatchers.Main) {
+                    if (currentIndex == photoList.indexOf(item)) {
+                        displayPhoto(currentIndex)
+                    }
+                    Toast.makeText(this@MainActivity, "メモを保存しました", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, "メモ保存に失敗しました", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 
     // --- 設定・メニュー ---
@@ -832,7 +931,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 }
 
                 val item = photoList[position]
-                badge.text = "${position + 1}${if (item.lat != null) " 📍" else ""}"
+                val memoMark = if (item.comment.isNotEmpty()) " 📝" else ""
+                badge.text = "${position + 1}${if (item.lat != null) " 📍" else ""}$memoMark"
 
                 if (position == currentIndex) { frame.setPadding(3.dp(), 3.dp(), 3.dp(), 3.dp()); frame.setBackgroundColor(Color.parseColor("#0066FF")) }
                 else { frame.setPadding(0, 0, 0, 0); frame.setBackgroundColor(Color.BLACK) }
@@ -861,7 +961,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         if (photoList.isEmpty()) return
         val names = photoList.mapIndexed { idx, p ->
             val prefix = if (idx == currentIndex) "▶ " else "   "
-            "$prefix[${idx + 1}] ${p.name}${if (p.lat != null) " [GPS]" else ""}"
+            val memoTag = if (p.comment.isNotEmpty()) " [📝${p.comment}]" else ""
+            "$prefix[${idx + 1}] ${p.name}${if (p.lat != null) " [GPS]" else ""}$memoTag"
         }.toTypedArray()
         AlertDialog.Builder(this).setTitle("ファイル名一覧").setItems(names) { _, which -> navigateTo(which) }.setNegativeButton("戻る") { _, _ -> showFileMenu() }.show()
     }
@@ -895,7 +996,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }.setNegativeButton("キャンセル") { _, _ -> showPinMenu() }.show()
     }
 
-    // --- 爆速・安全なキャッシュ管理 ---
+    // --- キャッシュ管理 ---
     private fun getTileCacheDir(): File {
         val dirs = ContextCompat.getExternalCacheDirs(this)
         val storageIndex = getSharedPreferences("app_settings", Context.MODE_PRIVATE).getInt("storage_index", 0)
@@ -1112,7 +1213,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         return md.digest(input.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 
-    // --- 爆速リストアップ処理 ---
+    // --- リストアップ処理 ---
     private suspend fun fetchFileListQuery(folderUri: Uri): List<PhotoItem> = withContext(Dispatchers.IO) {
         val list = mutableListOf<PhotoItem>()
         try {
@@ -1193,23 +1294,35 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 if (cachedData != "NO_GPS") {
                     val parts = cachedData.split(",")
                     if (parts.size >= 2) {
-                        item.lat = parts[0].toDoubleOrNull(); item.lon = parts[1].toDoubleOrNull()
+                        item.lat = parts[0].toDoubleOrNull()
+                        item.lon = parts[1].toDoubleOrNull()
                         if (parts.size >= 3) item.direction = parts[2].toDoubleOrNull()
+                        if (parts.size >= 4) item.comment = parts.subList(3, parts.size).joinToString(",")
                         item.debugStatus = "OK"
                     }
                 } else item.debugStatus = "GPSタグなし"
             } else {
                 try {
                     contentResolver.openFileDescriptor(item.uri, "r")?.use { pfd ->
-                        val exif = ExifInterface(pfd.fileDescriptor); val latLong = FloatArray(2)
+                        val exif = ExifInterface(pfd.fileDescriptor)
+                        val latLong = FloatArray(2)
                         if (exif.getLatLong(latLong)) {
-                            item.lat = latLong[0].toDouble(); item.lon = latLong[1].toDouble()
+                            item.lat = latLong[0].toDouble()
+                            item.lon = latLong[1].toDouble()
                             val direction = exif.getAttributeDouble(ExifInterface.TAG_GPS_IMG_DIRECTION, -1.0)
                             if (direction >= 0) item.direction = direction
                             item.debugStatus = "OK"
-                            editor.putString(cacheKey, "${item.lat},${item.lon},${item.direction ?: ""}")
                         } else {
-                            item.debugStatus = "GPSタグなし"; editor.putString(cacheKey, "NO_GPS")
+                            item.debugStatus = "GPSタグなし"
+                        }
+                        
+                        val comment = exif.getAttribute(ExifInterface.TAG_USER_COMMENT) ?: ""
+                        item.comment = comment
+
+                        if (item.lat != null) {
+                            editor.putString(cacheKey, "${item.lat},${item.lon},${item.direction ?: ""},${item.comment}")
+                        } else {
+                            editor.putString(cacheKey, "NO_GPS")
                         }
                     }
                 } catch (e: Exception) { item.debugStatus = "例外" }
@@ -1248,6 +1361,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
+    // --- 写真と情報の表示（ファイル名とメモ表示化） ---
     private fun displayPhoto(index: Int) {
         val item = photoList[index]
         getSharedPreferences("app_settings", Context.MODE_PRIVATE).edit().putString("last_photo_name", item.name).apply()
@@ -1261,18 +1375,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
         }
 
-        val gpsText = if (item.lat != null && item.lon != null) {
-            var t = "GPS: ${"%.6f".format(item.lat)}, ${"%.6f".format(item.lon)}"
-            if (item.direction != null) t += " (方位: ${item.direction}°)"
-            t
-        } else "GPS: なし (${item.debugStatus})"
-
         if (isCameraMode) {
             val destText = if (currentFolderUri != null) "【選択中フォルダへ保存】" else "【標準カメラフォルダへ保存】"
             tvImageInfo.text = "$destText\n十字線を対象に合わせて撮影"
             tvImageInfo.setBackgroundColor(Color.parseColor("#CC0000"))
         } else {
-            tvImageInfo.text = "[${index + 1}/${photoList.size}] ${item.name}\n$gpsText"
+            // 左上ラベル：1行目にファイル名、2行目にメモを表示
+            val memoText = if (item.comment.isNotEmpty()) "📝 ${item.comment}" else "📝 (タップしてメモを入力)"
+            tvImageInfo.text = "[${index + 1}/${photoList.size}] ${item.name}\n$memoText"
             tvImageInfo.setBackgroundColor(Color.parseColor("#99000000"))
         }
 
@@ -1330,7 +1440,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
         }
 
-        // assets から HTML を読み込み、地理院ドメインのコンテキストで展開
         val htmlContent = assets.open("map.html").bufferedReader().use { it.readText() }
         mapWebView.loadDataWithBaseURL("https://maps.gsi.go.jp", htmlContent, "text/html", "UTF-8", null)
     }
@@ -1374,13 +1483,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         @JavascriptInterface
         fun onMarkerClicked(index: Int) { runOnUiThread { if (index >= 0 && !isCameraMode) navigateTo(index) } }
         
-        // ★ 重要：親クラス(MainActivity)のメソッドを明示指定して無限再帰クラッシュを防止
         @JavascriptInterface
         fun setMapAutoPan(isTracking: Boolean) {
             runOnUiThread { this@MainActivity.setMapAutoPan(isTracking) }
         }
 
-        // ★ ドラッグされた時に呼ばれる（GPS電源は切らずに追従のみOFF）
         @JavascriptInterface
         fun disableAutoPan() {
             runOnUiThread { isMapAutoPan = false }
