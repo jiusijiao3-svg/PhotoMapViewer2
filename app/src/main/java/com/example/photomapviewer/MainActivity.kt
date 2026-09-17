@@ -226,7 +226,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        loadSettings()
+        loadGeneralSettings()
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -247,7 +247,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         val btnSettings = Button(this).apply { text = "≡"; textSize = 18f; setBackgroundColor(Color.parseColor("#383838")); setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(48.dp(), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginEnd = 4.dp() }; setOnClickListener { showMainMenu() } }
         topRow.addView(btnSettings)
 
-        // ★ 先頭ファイルに戻るボタン（▲表示：現在のソート順に基づきインデックス0へジャンプ）
         val btnTopPhoto = Button(this).apply { 
             text = "▲"
             textSize = 14f
@@ -858,21 +857,31 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    private fun loadSettings() {
+    private fun loadGeneralSettings() {
         val prefs = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
-        val sortIdx = prefs.getInt("sort_type_index", SortType.DATE_TAKEN_DESC.ordinal)
-        currentSortType = SortType.values().getOrElse(sortIdx) { SortType.DATE_TAKEN_DESC }
         pinLimitCount = prefs.getInt("pin_limit_count", 50)
         cacheLimitMb = prefs.getInt("cache_limit_mb", 100)
         startupMode = prefs.getInt("startup_mode", 0)
     }
 
-    private fun saveSettings() {
+    private fun saveGeneralSettings() {
         getSharedPreferences("app_settings", Context.MODE_PRIVATE).edit()
-            .putInt("sort_type_index", currentSortType.ordinal)
             .putInt("pin_limit_count", pinLimitCount)
             .putInt("cache_limit_mb", cacheLimitMb)
             .putInt("startup_mode", startupMode).apply()
+    }
+
+    // ★ フォルダ固有の並び順をロード
+    private fun loadFolderSortSetting(folderUri: Uri) {
+        val prefs = getSharedPreferences("folder_sort_settings", Context.MODE_PRIVATE)
+        val sortIdx = prefs.getInt("sort_type_${folderUri}", SortType.DATE_TAKEN_DESC.ordinal)
+        currentSortType = SortType.values().getOrElse(sortIdx) { SortType.DATE_TAKEN_DESC }
+    }
+
+    // ★ フォルダ固有の並び順をセーブ
+    private fun saveFolderSortSetting(folderUri: Uri) {
+        val prefs = getSharedPreferences("folder_sort_settings", Context.MODE_PRIVATE)
+        prefs.edit().putInt("sort_type_${folderUri}", currentSortType.ordinal).apply()
     }
 
     private fun checkAutoResume() {
@@ -988,7 +997,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         AlertDialog.Builder(this).setTitle("ファイル名一覧").setItems(names) { _, which -> navigateTo(which) }.setNegativeButton("戻る") { _, _ -> showFileMenu() }.show()
     }
 
-    // ★ 並び順設定ダイアログの刷新
     private fun showSortDialog() {
         val options = SortType.values().map { it.label }.toTypedArray()
         val currentSelection = currentSortType.ordinal
@@ -996,7 +1004,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             .setTitle("並び順の設定")
             .setSingleChoiceItems(options, currentSelection) { dialog, which ->
                 currentSortType = SortType.values()[which]
-                saveSettings()
+                // 選択中フォルダに並び順を保存
+                currentFolderUri?.let { saveFolderSortSetting(it) }
                 applySort()
                 dialog.dismiss()
             }.setNegativeButton("戻る") { _, _ -> showFileMenu() }.show()
@@ -1012,13 +1021,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }.setNegativeButton("戻る") { _, _ -> showMainMenu() }.show()
     }
 
-    private fun finishPinChange(dialog: DialogInterface) { saveSettings(); renderCurrentPhotoOnMap(); dialog.dismiss() }
+    private fun finishPinChange(dialog: DialogInterface) { saveGeneralSettings(); renderCurrentPhotoOnMap(); dialog.dismiss() }
 
     private fun showCustomPinDialog() {
         val input = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; hint = "表示枚数 (例: 200)"; if (pinLimitCount > 0) setText(pinLimitCount.toString()) }
         AlertDialog.Builder(this).setTitle("手動設定").setView(input).setPositiveButton("決定") { _, _ ->
             val count = input.text.toString().toIntOrNull()
-            if (count != null && count > 0) { pinLimitCount = count; saveSettings(); renderCurrentPhotoOnMap() }
+            if (count != null && count > 0) { pinLimitCount = count; saveGeneralSettings(); renderCurrentPhotoOnMap() }
             else Toast.makeText(this, "正しい数値を入力してください", Toast.LENGTH_SHORT).show()
         }.setNegativeButton("キャンセル") { _, _ -> showPinMenu() }.show()
     }
@@ -1179,7 +1188,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         val values = listOf(50, 100, 250, 500, -1)
         val currentIdx = values.indexOf(cacheLimitMb).let { if (it >= 0) it else 1 }
         AlertDialog.Builder(this).setTitle("地図キャッシュ上限").setSingleChoiceItems(options, currentIdx) { dialog, which ->
-            cacheLimitMb = values[which]; saveSettings(); lifecycleScope.launch(Dispatchers.IO) { trimTileCacheIfNeeded() }; dialog.dismiss()
+            cacheLimitMb = values[which]; saveGeneralSettings(); lifecycleScope.launch(Dispatchers.IO) { trimTileCacheIfNeeded() }; dialog.dismiss()
         }.setNegativeButton("戻る") { _, _ -> showCacheMenu() }.show()
     }
 
@@ -1187,7 +1196,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun clearMetadataCache() { getSharedPreferences("exif_metadata_cache", Context.MODE_PRIVATE).edit().clear().apply(); Toast.makeText(this, "Exifキャッシュ消去完了", Toast.LENGTH_SHORT).show() }
     private fun showStartupMenu() {
         val options = arrayOf("前回最後に見ていた写真", "フォルダの先頭ファイル", "手動でフォルダ選択")
-        AlertDialog.Builder(this).setTitle("起動時の動作").setSingleChoiceItems(options, startupMode) { dialog, which -> startupMode = which; saveSettings(); dialog.dismiss() }.setNegativeButton("戻る") { _, _ -> showMainMenu() }.show()
+        AlertDialog.Builder(this).setTitle("起動時の動作").setSingleChoiceItems(options, startupMode) { dialog, which -> startupMode = which; saveGeneralSettings(); dialog.dismiss() }.setNegativeButton("戻る") { _, _ -> showMainMenu() }.show()
     }
 
     private fun openFullScreen() {
@@ -1284,6 +1293,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun loadPhotosUltraFast(folderUri: Uri, restorePhotoName: String?) {
         backgroundLoadJob?.cancel()
         currentFolderUri = folderUri
+
+        // ★ 開いたフォルダ専用の並び順設定を復元
+        loadFolderSortSetting(folderUri)
 
         lifecycleScope.launch {
             if (!isCameraMode) { tvImageInfo.text = "データベース検索中..."; ivThumbnail.setImageDrawable(null) }
