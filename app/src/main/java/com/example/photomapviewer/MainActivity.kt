@@ -83,6 +83,7 @@ import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
@@ -276,7 +277,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             setBackgroundColor(Color.parseColor("#99000000"))
             setPadding(8.dp(), 6.dp(), 8.dp(), 6.dp())
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply { setMargins(6.dp(), 6.dp(), 6.dp(), 6.dp()) }
-            // 左上テキストの直接タップでもメモ編集ダイアログを開く
             setOnClickListener {
                 if (!isCameraMode && photoList.isNotEmpty()) {
                     showEditMemoDialog(currentIndex)
@@ -338,7 +338,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    // --- 戻るボタンの安全化 ---
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (::fullContainer.isInitialized && fullContainer.visibility == View.VISIBLE) {
@@ -375,7 +374,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    // --- GPSメイン電源の管理 ---
     @SuppressLint("MissingPermission")
     private fun toggleGpsPower(enable: Boolean) {
         if (enable && ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
@@ -447,7 +445,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    // --- 地図の自動追従 (パン) 管理 ---
     private fun setMapAutoPan(enable: Boolean) {
         isMapAutoPan = enable
         if (isMapReady) {
@@ -475,7 +472,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    // --- センサー処理 (真北偏角補正) ---
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null) return
         if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
@@ -507,7 +503,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    // --- カメラ (CameraX) & シャッター機能 ---
     private fun toggleCameraMode() {
         isCameraMode = !isCameraMode
         cameraInfoResetJob?.cancel()
@@ -604,9 +599,23 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
                                 exif.setAttribute(ExifInterface.TAG_GPS_IMG_DIRECTION, "%.2f/1".format(Locale.US, trueAzimuth))
                                 exif.setAttribute(ExifInterface.TAG_GPS_IMG_DIRECTION_REF, "T")
+
+                                // ★ GISソフト・QGIS互換のためのGPSタイムスタンプ（UTC）と日時直書き
+                                val now = Date()
+                                val utcDateFmt = SimpleDateFormat("yyyy:MM:dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+                                val utcTimeFmt = SimpleDateFormat("HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+                                exif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, utcDateFmt.format(now))
+                                exif.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP, utcTimeFmt.format(now))
+
+                                val localDateFmt = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
+                                val localTimeStr = localDateFmt.format(now)
+                                exif.setAttribute(ExifInterface.TAG_DATETIME, localTimeStr)
+                                exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, localTimeStr)
+                                exif.setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, localTimeStr)
+
                                 exif.saveAttributes()
 
-                                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.JAPAN).format(Date())
+                                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.JAPAN).format(now)
                                 val newFileName = "IMG_${timestamp}.jpg"
                                 
                                 if (currentFolderUri != null) {
@@ -678,7 +687,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         return "$degrees/1,$minutes/1,$seconds/1000"
     }
 
-    // --- UI入れ替え ---
     private fun toggleViewOrder() {
         isMapOnTop = !isMapOnTop
         (thumbContainer.parent as? ViewGroup)?.removeView(thumbContainer)
@@ -699,7 +707,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    // --- スワイプ＆余白タップ検知（黒帯判定） ---
     private fun getImageDisplayedRect(imageView: ImageView): RectF {
         val drawable = imageView.drawable ?: return RectF()
         val viewWidth = imageView.width.toFloat()
@@ -741,13 +748,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 if (isCameraMode || photoList.isEmpty()) return false
                 
-                // 画像の描画枠（レターボックス）内外を判定
                 val imgRect = getImageDisplayedRect(ivThumbnail)
                 if (imgRect.contains(e.x, e.y)) {
-                    // 写真本体をタップしたときは従来どおり全画面表示
                     openFullScreen()
                 } else {
-                    // 周囲の黒い部分（余白）をタップしたときはメモ編集
                     showEditMemoDialog(currentIndex)
                 }
                 return true
@@ -786,7 +790,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         updateFullScreenImage()
     }
 
-    // --- メモ編集ダイアログ & EXIF書き込み ---
     private fun showEditMemoDialog(index: Int) {
         val item = photoList.getOrNull(index) ?: return
         val input = EditText(this).apply {
@@ -819,7 +822,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
                 item.comment = newComment
                 
-                // メタデータキャッシュを即座に更新
                 val prefs = getSharedPreferences("exif_metadata_cache", Context.MODE_PRIVATE)
                 val cacheKey = "${item.name}_${item.lastModified}"
                 prefs.edit().putString(cacheKey, "${item.lat ?: ""},${item.lon ?: ""},${item.direction ?: ""},${newComment}").apply()
@@ -838,7 +840,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    // --- 設定・メニュー ---
     private fun loadSettings() {
         val prefs = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
         isSortDesc = prefs.getBoolean("sort_desc", true)
@@ -996,7 +997,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }.setNegativeButton("キャンセル") { _, _ -> showPinMenu() }.show()
     }
 
-    // --- キャッシュ管理 ---
     private fun getTileCacheDir(): File {
         val dirs = ContextCompat.getExternalCacheDirs(this)
         val storageIndex = getSharedPreferences("app_settings", Context.MODE_PRIVATE).getInt("storage_index", 0)
@@ -1213,7 +1213,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         return md.digest(input.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 
-    // --- リストアップ処理 ---
     private suspend fun fetchFileListQuery(folderUri: Uri): List<PhotoItem> = withContext(Dispatchers.IO) {
         val list = mutableListOf<PhotoItem>()
         try {
@@ -1361,7 +1360,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    // --- 写真と情報の表示（ファイル名とメモ表示化） ---
     private fun displayPhoto(index: Int) {
         val item = photoList[index]
         getSharedPreferences("app_settings", Context.MODE_PRIVATE).edit().putString("last_photo_name", item.name).apply()
@@ -1380,7 +1378,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             tvImageInfo.text = "$destText\n十字線を対象に合わせて撮影"
             tvImageInfo.setBackgroundColor(Color.parseColor("#CC0000"))
         } else {
-            // 左上ラベル：1行目にファイル名、2行目にメモを表示
             val memoText = if (item.comment.isNotEmpty()) "📝 ${item.comment}" else "📝 (タップしてメモを入力)"
             tvImageInfo.text = "[${index + 1}/${photoList.size}] ${item.name}\n$memoText"
             tvImageInfo.setBackgroundColor(Color.parseColor("#99000000"))
@@ -1464,7 +1461,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
         }
         val hasCoords = current.lat != null && current.lon != null
-        mapWebView.evaluateJavascript("updatePoints(${current.lat ?: 0.0}, ${current.lon ?: 0.0}, $hasCoords, '${jsonArray}', $currentIndex);", null)
+        // ★ JSONObject.quote で文字列リテラル全体を安全にエスケープしJSインジェクションや構文エラーを防止
+        val safeJson = JSONObject.quote(jsonArray.toString())
+        mapWebView.evaluateJavascript("updatePoints(${current.lat ?: 0.0}, ${current.lon ?: 0.0}, $hasCoords, $safeJson, $currentIndex);", null)
     }
 
     private fun openInGsiMap() {
