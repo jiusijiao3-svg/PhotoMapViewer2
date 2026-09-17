@@ -92,6 +92,15 @@ import kotlin.math.tan
 
 class MainActivity : AppCompatActivity(), SensorEventListener {
 
+    enum class SortType(val label: String) {
+        DATE_TAKEN_DESC("撮影日 (新しい順)"),
+        DATE_TAKEN_ASC("撮影日 (古い順)"),
+        NAME_DESC("ファイル名 (降順: Z→A)"),
+        NAME_ASC("ファイル名 (昇順: A→Z)"),
+        DATE_MODIFIED_DESC("更新日 (新しい順)"),
+        DATE_MODIFIED_ASC("更新日 (古い順)")
+    }
+
     data class PhotoItem(
         val uri: Uri,
         val name: String,
@@ -99,10 +108,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         var lat: Double? = null,
         var lon: Double? = null,
         var direction: Double? = null,
+        var dateTaken: Long? = null,
         var comment: String = "",
         var isLoaded: Boolean = false,
         var debugStatus: String = ""
-    )
+    ) {
+        fun getEffectiveDate(): Long = dateTaken ?: lastModified
+    }
 
     companion object {
         private const val TILE_MAX_AGE_MS = 180L * 24 * 60 * 60 * 1000L
@@ -117,7 +129,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var currentFolderUri: Uri? = null
 
     // 設定値
-    private var isSortDesc = true
+    private var currentSortType = SortType.DATE_TAKEN_DESC
     private var pinLimitCount = 50
     private var cacheLimitMb = 100
     private var startupMode = 0
@@ -235,7 +247,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         val btnSettings = Button(this).apply { text = "≡"; textSize = 18f; setBackgroundColor(Color.parseColor("#383838")); setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(48.dp(), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginEnd = 4.dp() }; setOnClickListener { showMainMenu() } }
         topRow.addView(btnSettings)
 
-        val btnTopPhoto = Button(this).apply { text = "◀"; textSize = 12f; setBackgroundColor(Color.parseColor("#383838")); setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(40.dp(), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginEnd = 4.dp() }; setOnClickListener { if (photoList.isNotEmpty() && !isCameraMode) navigateTo(0) } }
+        // ★ 先頭ファイルに戻るボタン（▲表示：現在のソート順に基づきインデックス0へジャンプ）
+        val btnTopPhoto = Button(this).apply { 
+            text = "▲"
+            textSize = 14f
+            setBackgroundColor(Color.parseColor("#383838"))
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(40.dp(), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginEnd = 4.dp() }
+            setOnClickListener { if (photoList.isNotEmpty() && !isCameraMode) navigateTo(0) } 
+        }
         topRow.addView(btnTopPhoto)
 
         val btnCamera = Button(this).apply { text = "📷"; textSize = 14f; setBackgroundColor(Color.parseColor("#0066FF")); setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(48.dp(), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginEnd = 4.dp() }; setOnClickListener { toggleCameraMode() } }
@@ -304,8 +324,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         mapContainer.addView(tvGnssHud); mainLayout.addView(mapContainer)
 
         btmRowNormal = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 48.dp()) }
-        btnNewer = Button(this).apply { text = "◀ 新しい写真"; textSize = 12f; setBackgroundColor(Color.parseColor("#2D2D2D")); setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginEnd = 4.dp() }; setOnClickListener { val t = if (isSortDesc) currentIndex - 1 else currentIndex + 1; navigateTo(t) } }
-        btnOlder = Button(this).apply { text = "古い写真 ▶"; textSize = 12f; setBackgroundColor(Color.parseColor("#2D2D2D")); setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginStart = 4.dp() }; setOnClickListener { val t = if (isSortDesc) currentIndex + 1 else currentIndex - 1; navigateTo(t) } }
+        btnNewer = Button(this).apply { text = "◀ 前へ"; textSize = 11f; setBackgroundColor(Color.parseColor("#2D2D2D")); setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginEnd = 4.dp() }; setOnClickListener { if (currentIndex > 0) navigateTo(currentIndex - 1) } }
+        btnOlder = Button(this).apply { text = "次へ ▶"; textSize = 11f; setBackgroundColor(Color.parseColor("#2D2D2D")); setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginStart = 4.dp() }; setOnClickListener { if (currentIndex < photoList.size - 1) navigateTo(currentIndex + 1) } }
         btmRowNormal.addView(btnNewer); btmRowNormal.addView(btnOlder); mainLayout.addView(btmRowNormal)
 
         btmRowCamera = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 64.dp()); visibility = View.GONE }
@@ -600,7 +620,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                                 exif.setAttribute(ExifInterface.TAG_GPS_IMG_DIRECTION, "%.2f/1".format(Locale.US, trueAzimuth))
                                 exif.setAttribute(ExifInterface.TAG_GPS_IMG_DIRECTION_REF, "T")
 
-                                // ★ GISソフト・QGIS互換のためのGPSタイムスタンプ（UTC）と日時直書き
                                 val now = Date()
                                 val utcDateFmt = SimpleDateFormat("yyyy:MM:dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
                                 val utcTimeFmt = SimpleDateFormat("HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
@@ -734,11 +753,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 val diffX = e2.x - e1.x
                 val diffY = e2.y - e1.y
                 if (abs(diffX) > abs(diffY) && abs(diffX) > SWIPE_THRESHOLD && abs(velocityX) > SWIPE_VELOCITY_THRESHOLD) {
-                    val t = if (diffX > 0) { if (isSortDesc) currentIndex - 1 else currentIndex + 1 } else { if (isSortDesc) currentIndex + 1 else currentIndex - 1 }
+                    val t = if (diffX > 0) currentIndex - 1 else currentIndex + 1
                     if (t in 0 until photoList.size) navigateTo(t)
                     return true
                 } else if (abs(diffY) > SWIPE_THRESHOLD && abs(velocityY) > SWIPE_VELOCITY_THRESHOLD) {
-                    val t = if (diffY > 0) { if (isSortDesc) currentIndex - 1 else currentIndex + 1 } else { if (isSortDesc) currentIndex + 1 else currentIndex - 1 }
+                    val t = if (diffY > 0) currentIndex - 1 else currentIndex + 1
                     if (t in 0 until photoList.size) navigateTo(t)
                     return true
                 }
@@ -747,7 +766,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 if (isCameraMode || photoList.isEmpty()) return false
-                
                 val imgRect = getImageDisplayedRect(ivThumbnail)
                 if (imgRect.contains(e.x, e.y)) {
                     openFullScreen()
@@ -768,11 +786,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 val diffX = e2.x - e1.x
                 val diffY = e2.y - e1.y
                 if (abs(diffX) > abs(diffY) && abs(diffX) > SWIPE_THRESHOLD && abs(velocityX) > SWIPE_VELOCITY_THRESHOLD) {
-                    val t = if (diffX > 0) { if (isSortDesc) currentIndex - 1 else currentIndex + 1 } else { if (isSortDesc) currentIndex + 1 else currentIndex - 1 }
+                    val t = if (diffX > 0) currentIndex - 1 else currentIndex + 1
                     if (t in 0 until photoList.size) navigateToAndRefreshFull(t)
                     return true
                 } else if (abs(diffY) > SWIPE_THRESHOLD && abs(velocityY) > SWIPE_VELOCITY_THRESHOLD) {
-                    val t = if (diffY > 0) { if (isSortDesc) currentIndex - 1 else currentIndex + 1 } else { if (isSortDesc) currentIndex + 1 else currentIndex - 1 }
+                    val t = if (diffY > 0) currentIndex - 1 else currentIndex + 1
                     if (t in 0 until photoList.size) navigateToAndRefreshFull(t)
                     return true
                 }
@@ -824,7 +842,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 
                 val prefs = getSharedPreferences("exif_metadata_cache", Context.MODE_PRIVATE)
                 val cacheKey = "${item.name}_${item.lastModified}"
-                prefs.edit().putString(cacheKey, "${item.lat ?: ""},${item.lon ?: ""},${item.direction ?: ""},${newComment}").apply()
+                prefs.edit().putString(cacheKey, "${item.lat ?: ""},${item.lon ?: ""},${item.direction ?: ""},${item.dateTaken ?: ""},${newComment}").apply()
 
                 withContext(Dispatchers.Main) {
                     if (currentIndex == photoList.indexOf(item)) {
@@ -842,7 +860,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun loadSettings() {
         val prefs = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
-        isSortDesc = prefs.getBoolean("sort_desc", true)
+        val sortIdx = prefs.getInt("sort_type_index", SortType.DATE_TAKEN_DESC.ordinal)
+        currentSortType = SortType.values().getOrElse(sortIdx) { SortType.DATE_TAKEN_DESC }
         pinLimitCount = prefs.getInt("pin_limit_count", 50)
         cacheLimitMb = prefs.getInt("cache_limit_mb", 100)
         startupMode = prefs.getInt("startup_mode", 0)
@@ -850,7 +869,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun saveSettings() {
         getSharedPreferences("app_settings", Context.MODE_PRIVATE).edit()
-            .putBoolean("sort_desc", isSortDesc)
+            .putInt("sort_type_index", currentSortType.ordinal)
             .putInt("pin_limit_count", pinLimitCount)
             .putInt("cache_limit_mb", cacheLimitMb)
             .putInt("startup_mode", startupMode).apply()
@@ -892,11 +911,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun showFileMenu() {
-        val sortLabel = if (isSortDesc) "新しい順 (降順)" else "古い順 (昇順)"
-        val items = arrayOf("🖼️ サムネイル一覧", "📑 ファイル名一覧", "並び順: $sortLabel")
+        val items = arrayOf("🖼️ サムネイル一覧", "📑 ファイル名一覧", "並び順: ${currentSortType.label}")
         AlertDialog.Builder(this).setTitle("ファイル操作").setItems(items) { _, which ->
             when (which) {
-                0 -> showThumbnailGridPicker(); 1 -> showFileNamePicker(); 2 -> showSortDialog()
+                0 -> showThumbnailGridPicker()
+                1 -> showFileNamePicker()
+                2 -> showSortDialog()
             }
         }.setNegativeButton("戻る") { _, _ -> showMainMenu() }.show()
     }
@@ -968,12 +988,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         AlertDialog.Builder(this).setTitle("ファイル名一覧").setItems(names) { _, which -> navigateTo(which) }.setNegativeButton("戻る") { _, _ -> showFileMenu() }.show()
     }
 
+    // ★ 並び順設定ダイアログの刷新
     private fun showSortDialog() {
-        val options = arrayOf("新しい順 (降順)", "古い順 (昇順)")
-        val currentSelection = if (isSortDesc) 0 else 1
-        AlertDialog.Builder(this).setTitle("並び順").setSingleChoiceItems(options, currentSelection) { dialog, which ->
-            isSortDesc = (which == 0); saveSettings(); applySort(); dialog.dismiss()
-        }.show()
+        val options = SortType.values().map { it.label }.toTypedArray()
+        val currentSelection = currentSortType.ordinal
+        AlertDialog.Builder(this)
+            .setTitle("並び順の設定")
+            .setSingleChoiceItems(options, currentSelection) { dialog, which ->
+                currentSortType = SortType.values()[which]
+                saveSettings()
+                applySort()
+                dialog.dismiss()
+            }.setNegativeButton("戻る") { _, _ -> showFileMenu() }.show()
     }
 
     private fun showPinMenu() {
@@ -1213,6 +1239,24 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         return md.digest(input.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 
+    private fun extractDateFromFileName(name: String): Long? {
+        val regex = Regex("(\\d{8})_(\\d{6})")
+        val match = regex.find(name) ?: return null
+        return try {
+            val (d, t) = match.destructured
+            val fmt = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+            fmt.parse("${d}_${t}")?.time
+        } catch (e: Exception) { null }
+    }
+
+    private fun parseExifDate(dateStr: String?): Long? {
+        if (dateStr.isNullOrBlank()) return null
+        return try {
+            val fmt = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
+            fmt.parse(dateStr.trim())?.time
+        } catch (e: Exception) { null }
+    }
+
     private suspend fun fetchFileListQuery(folderUri: Uri): List<PhotoItem> = withContext(Dispatchers.IO) {
         val list = mutableListOf<PhotoItem>()
         try {
@@ -1228,7 +1272,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     if (mime.startsWith("image/jpeg") || mime.startsWith("image/jpg")) {
                         val docId = cursor.getString(idIdx); val name = cursor.getString(nameIdx) ?: "Unknown"; val lastMod = cursor.getLong(modIdx)
                         val uri = DocumentsContract.buildDocumentUriUsingTree(folderUri, docId)
-                        list.add(PhotoItem(uri, name, lastMod))
+                        val initialDate = extractDateFromFileName(name)
+                        list.add(PhotoItem(uri, name, lastMod, dateTaken = initialDate))
                     }
                 }
             }
@@ -1251,7 +1296,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 return@launch
             }
             
-            photoList.addAll(rawList); applySortListOnly()
+            photoList.addAll(rawList)
+            applySortListOnly()
             val initialLoadCount = if (pinLimitCount > 0) minOf(pinLimitCount, photoList.size) else minOf(50, photoList.size)
             withContext(Dispatchers.IO) { parseExifBlock(0, initialLoadCount) }
 
@@ -1269,7 +1315,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun applySortListOnly() {
-        if (isSortDesc) photoList.sortByDescending { it.lastModified } else photoList.sortBy { it.lastModified }
+        when (currentSortType) {
+            SortType.DATE_TAKEN_DESC -> photoList.sortWith(compareByDescending<PhotoItem> { it.getEffectiveDate() }.thenBy { it.name })
+            SortType.DATE_TAKEN_ASC -> photoList.sortWith(compareBy<PhotoItem> { it.getEffectiveDate() }.thenBy { it.name })
+            SortType.NAME_DESC -> photoList.sortByDescending { it.name }
+            SortType.NAME_ASC -> photoList.sortBy { it.name }
+            SortType.DATE_MODIFIED_DESC -> photoList.sortWith(compareByDescending<PhotoItem> { it.lastModified }.thenBy { it.name })
+            SortType.DATE_MODIFIED_ASC -> photoList.sortWith(compareBy<PhotoItem> { it.lastModified }.thenBy { it.name })
+        }
     }
 
     private fun applySort() {
@@ -1296,7 +1349,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                         item.lat = parts[0].toDoubleOrNull()
                         item.lon = parts[1].toDoubleOrNull()
                         if (parts.size >= 3) item.direction = parts[2].toDoubleOrNull()
-                        if (parts.size >= 4) item.comment = parts.subList(3, parts.size).joinToString(",")
+                        if (parts.size >= 4) {
+                            val possibleTime = parts[3].toLongOrNull()
+                            if (possibleTime != null) {
+                                item.dateTaken = possibleTime
+                                if (parts.size >= 5) item.comment = parts.subList(4, parts.size).joinToString(",")
+                            } else {
+                                item.comment = parts.subList(3, parts.size).joinToString(",")
+                            }
+                        }
                         item.debugStatus = "OK"
                     }
                 } else item.debugStatus = "GPSタグなし"
@@ -1315,11 +1376,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                             item.debugStatus = "GPSタグなし"
                         }
                         
+                        val dateOriginalStr = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL) ?: exif.getAttribute(ExifInterface.TAG_DATETIME)
+                        val parsedDate = parseExifDate(dateOriginalStr)
+                        if (parsedDate != null) {
+                            item.dateTaken = parsedDate
+                        }
+
                         val comment = exif.getAttribute(ExifInterface.TAG_USER_COMMENT) ?: ""
                         item.comment = comment
 
                         if (item.lat != null) {
-                            editor.putString(cacheKey, "${item.lat},${item.lon},${item.direction ?: ""},${item.comment}")
+                            editor.putString(cacheKey, "${item.lat},${item.lon},${item.direction ?: ""},${item.dateTaken ?: ""},${item.comment}")
                         } else {
                             editor.putString(cacheKey, "NO_GPS")
                         }
@@ -1360,6 +1427,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
+    private fun updateNavButtons() {
+        val (prevLabel, nextLabel) = when (currentSortType) {
+            SortType.DATE_TAKEN_DESC -> Pair("◀ 新しい写真", "古い写真 ▶")
+            SortType.DATE_TAKEN_ASC -> Pair("◀ 古い写真", "新しい写真 ▶")
+            SortType.NAME_DESC -> Pair("◀ 前 (Z→A)", "次 (Z→A) ▶")
+            SortType.NAME_ASC -> Pair("◀ 前 (A→Z)", "次 (A→Z) ▶")
+            SortType.DATE_MODIFIED_DESC -> Pair("◀ 新しい写真", "古い写真 ▶")
+            SortType.DATE_MODIFIED_ASC -> Pair("◀ 古い写真", "新しい写真 ▶")
+        }
+        btnNewer.text = prevLabel
+        btnOlder.text = nextLabel
+        btnNewer.isEnabled = (currentIndex > 0)
+        btnOlder.isEnabled = (currentIndex < photoList.size - 1)
+    }
+
     private fun displayPhoto(index: Int) {
         val item = photoList[index]
         getSharedPreferences("app_settings", Context.MODE_PRIVATE).edit().putString("last_photo_name", item.name).apply()
@@ -1383,8 +1465,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             tvImageInfo.setBackgroundColor(Color.parseColor("#99000000"))
         }
 
-        btnNewer.isEnabled = (if (isSortDesc) index > 0 else index < photoList.size - 1)
-        btnOlder.isEnabled = (if (isSortDesc) index < photoList.size - 1 else index > 0)
+        updateNavButtons()
 
         val hasGps = (item.lat != null && item.lon != null)
         btnGsi.isEnabled = hasGps; btnGoogleMap.isEnabled = hasGps
@@ -1461,7 +1542,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
         }
         val hasCoords = current.lat != null && current.lon != null
-        // ★ JSONObject.quote で文字列リテラル全体を安全にエスケープしJSインジェクションや構文エラーを防止
         val safeJson = JSONObject.quote(jsonArray.toString())
         mapWebView.evaluateJavascript("updatePoints(${current.lat ?: 0.0}, ${current.lon ?: 0.0}, $hasCoords, $safeJson, $currentIndex);", null)
     }
