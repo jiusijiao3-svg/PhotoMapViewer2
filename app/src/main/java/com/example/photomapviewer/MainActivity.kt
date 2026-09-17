@@ -122,7 +122,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     // モード管理
     private var isCameraMode = false
-
+    
     // ★ 分離された2つの状態
     private var isGpsPowerOn = false    // GPS自体の電源 (トップボタン)
     private var isMapAutoPan = false    // 地図の自動追従 (地図上の◎ボタン)
@@ -137,7 +137,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var lastMagnetometerSet = false
     private var currentAzimuth = 0.0
     private var currentDeclination = 0.0f
-
+    
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
     private var locationManager: LocationManager? = null
@@ -159,15 +159,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var mapContainer: FrameLayout
     private lateinit var mapWebView: WebView
     private lateinit var tvGnssHud: TextView
-
+    
     private lateinit var btnGpsToggle: Button
-
+    
     private lateinit var btnNewer: Button
     private lateinit var btnOlder: Button
     private lateinit var btnGsi: Button
     private lateinit var btnGoogleMap: Button
     private lateinit var btnSwap: Button
-
+    
     private lateinit var btmRowNormal: LinearLayout
     private lateinit var btmRowCamera: LinearLayout
     private lateinit var btnCancelCamera: Button
@@ -302,7 +302,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) permissions.add(Manifest.permission.ACCESS_MEDIA_LOCATION)
         else permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) permissions.add(Manifest.permission.POST_NOTIFICATIONS)
-
+        
         val needed = permissions.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (needed.isNotEmpty()) {
             permissionLauncher.launch(needed.toTypedArray())
@@ -332,7 +332,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         super.onResume()
         accelerometer?.also { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         magnetometer?.also { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
-
+        
         // スワイプキル等で裏でGPSが終了していた場合のUI復旧
         val prefEnabled = getSharedPreferences("app_settings", Context.MODE_PRIVATE).getBoolean("gps_enabled", false)
         if (isGpsPowerOn != prefEnabled) {
@@ -345,11 +345,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         sensorManager.unregisterListener(this)
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isGpsPowerOn) {
+            toggleGpsPower(false)
+        }
+    }
+
     // ★ 1. GPSメイン電源の管理 (完全分離)
     @SuppressLint("MissingPermission")
     private fun toggleGpsPower(enable: Boolean) {
         if (enable && ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
-
+        
         isGpsPowerOn = enable
         getSharedPreferences("app_settings", Context.MODE_PRIVATE).edit().putBoolean("gps_enabled", enable).apply()
 
@@ -357,12 +364,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             btnGpsToggle.text = "📡 ON"
             btnGpsToggle.setBackgroundColor(Color.parseColor("#00CC66"))
             btnGpsToggle.setTextColor(Color.WHITE)
-
+            
             ContextCompat.startForegroundService(this, Intent(this, GpsForegroundService::class.java))
-
+            
             val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000).build()
             locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) } // 重複登録防止
-
+            
             val callback = object : LocationCallback() {
                 override fun onLocationResult(locationResult: LocationResult) {
                     locationResult.lastLocation?.let { loc ->
@@ -370,7 +377,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                         val geoField = GeomagneticField(loc.latitude.toFloat(), loc.longitude.toFloat(), 0f, System.currentTimeMillis())
                         currentDeclination = geoField.declination
                         updateGnssHud()
-
+                        
                         // 自動追従がONの時のみ地図を動かす (分離ロジック)
                         if (isMapAutoPan && isMapReady) {
                             mapWebView.evaluateJavascript("moveToGpsLocation(${loc.latitude}, ${loc.longitude});", null)
@@ -380,7 +387,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
             locationCallback = callback
             fusedLocationClient.requestLocationUpdates(locationRequest, callback, Looper.getMainLooper())
-
+            
             gnssStatusCallback?.let { locationManager?.unregisterGnssStatusCallback(it) }
             gnssStatusCallback = object : GnssStatus.Callback() {
                 override fun onSatelliteStatusChanged(status: GnssStatus) {
@@ -393,22 +400,28 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 }
             }
             gnssStatusCallback?.let { locationManager?.registerGnssStatusCallback(it, null) }
-
+            
             // 電源を入れた時は自動で追従モードもONにする
             setMapAutoPan(true)
         } else {
             btnGpsToggle.text = "📡 OFF"
             btnGpsToggle.setBackgroundColor(Color.parseColor("#383838"))
             btnGpsToggle.setTextColor(Color.parseColor("#BBBBBB"))
-
+            
             stopService(Intent(this, GpsForegroundService::class.java))
-            locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
-            gnssStatusCallback?.let { locationManager?.unregisterGnssStatusCallback(it) }
-
+            locationCallback?.let {
+                fusedLocationClient.removeLocationUpdates(it)
+                locationCallback = null
+            }
+            gnssStatusCallback?.let {
+                locationManager?.unregisterGnssStatusCallback(it)
+                gnssStatusCallback = null
+            }
+            
             gnssSatelliteCount = 0
             gpsAccuracy = -1.0f
             updateGnssHud()
-
+            
             // 電源を切った時は追従もOFFにする
             setMapAutoPan(false)
         }
@@ -429,6 +442,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun forceExitApp() {
         toggleGpsPower(false)
         finishAffinity()
+        kotlin.system.exitProcess(0)
     }
 
     private fun updateGnssHud() {
@@ -461,11 +475,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 val azimuthInRadians = orientation[0]
                 var azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
                 if (azimuthInDegrees < 0) azimuthInDegrees += 360f
-
+                
                 currentAzimuth = azimuthInDegrees.toDouble()
                 var trueAzimuth = (currentAzimuth + currentDeclination) % 360.0
                 if (trueAzimuth < 0) trueAzimuth += 360.0
-
+                
                 if (isCameraMode && isMapReady) {
                     mapWebView.evaluateJavascript("updateCameraCrosshairDir($trueAzimuth);", null)
                 }
@@ -478,17 +492,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun toggleCameraMode() {
         isCameraMode = !isCameraMode
         cameraInfoResetJob?.cancel()
-
+        
         if (isCameraMode) {
             ivThumbnail.visibility = View.GONE
             viewFinder.visibility = View.VISIBLE
             btmRowNormal.visibility = View.GONE
             btmRowCamera.visibility = View.VISIBLE
-
+            
             val destText = if (currentFolderUri != null) "【選択中フォルダへ保存】" else "【標準カメラフォルダへ保存】"
             tvImageInfo.text = "$destText\n十字線を対象に合わせて撮影"
             tvImageInfo.setBackgroundColor(Color.parseColor("#CC0000"))
-
+            
             startCamera()
             if (isMapReady) mapWebView.evaluateJavascript("toggleCameraMode(true);", null)
         } else {
@@ -497,12 +511,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             btmRowNormal.visibility = View.VISIBLE
             btmRowCamera.visibility = View.GONE
             tvImageInfo.setBackgroundColor(Color.parseColor("#99000000"))
-
+            
             val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
             cameraProviderFuture.addListener({
                 try { cameraProviderFuture.get().unbindAll() } catch(e: Exception) {}
             }, ContextCompat.getMainExecutor(this))
-
+            
             if (isMapReady) mapWebView.evaluateJavascript("toggleCameraMode(false);", null)
             if (photoList.isNotEmpty()) displayPhoto(currentIndex)
         }
@@ -575,7 +589,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
                                 val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.JAPAN).format(Date())
                                 val newFileName = "IMG_${timestamp}.jpg"
-
+                                
                                 if (currentFolderUri != null) {
                                     val rootDoc = DocumentFile.fromTreeUri(this@MainActivity, currentFolderUri!!)
                                     val newFileDoc = rootDoc?.createFile("image/jpeg", newFileName)
@@ -908,7 +922,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             val limitStr = if (cacheLimitMb > 0) "${cacheLimitMb} MB" else "無制限"
             val storageIndex = getSharedPreferences("app_settings", Context.MODE_PRIVATE).getInt("storage_index", 0)
             val storageName = if (storageIndex == 0) "内部ストレージ" else "SDカード"
-
+            
             withContext(Dispatchers.Main) {
                 val items = arrayOf(
                     "🗂️ 保存先: $storageName (変更)",
@@ -934,7 +948,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         val dirs = ContextCompat.getExternalCacheDirs(this)
         val options = mutableListOf("内部ストレージ (高速推奨)")
         if (dirs.size > 1 && dirs[1] != null) options.add("SDカード領域")
-
+        
         val currentIndex = getSharedPreferences("app_settings", Context.MODE_PRIVATE).getInt("storage_index", 0)
         val validIndex = if (currentIndex < options.size) currentIndex else 0
 
@@ -1008,7 +1022,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 if (isCancelled) break
                 val cacheFile = File(tileDir, md5(urlStr) + ".png")
                 val isFresh = cacheFile.exists() && cacheFile.length() > 0L && (now - cacheFile.lastModified() < TILE_MAX_AGE_MS)
-
+                
                 if (!isFresh) {
                     try {
                         val conn = URL(urlStr).openConnection() as HttpURLConnection
@@ -1136,7 +1150,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 Toast.makeText(this@MainActivity, "JPEGが見つかりません", Toast.LENGTH_SHORT).show()
                 return@launch
             }
-
+            
             photoList.addAll(rawList); applySortListOnly()
             val initialLoadCount = if (pinLimitCount > 0) minOf(pinLimitCount, photoList.size) else minOf(50, photoList.size)
             withContext(Dispatchers.IO) { parseExifBlock(0, initialLoadCount) }
@@ -1147,7 +1161,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 if (found != -1) targetIdx = found
             }
             if (!photoList[targetIdx].isLoaded) { withContext(Dispatchers.IO) { parseExifBlock(targetIdx, targetIdx + 1) } }
-
+            
             currentIndex = targetIdx
             displayPhoto(currentIndex)
             if (initialLoadCount < photoList.size) startBackgroundParsing(initialLoadCount)
@@ -1359,7 +1373,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     inner class WebAppInterface {
         @JavascriptInterface
         fun onMarkerClicked(index: Int) { runOnUiThread { if (index >= 0 && !isCameraMode) navigateTo(index) } }
-
+        
         // ★ 重要：親クラス(MainActivity)のメソッドを明示指定して無限再帰クラッシュを防止
         @JavascriptInterface
         fun setMapAutoPan(isTracking: Boolean) {
