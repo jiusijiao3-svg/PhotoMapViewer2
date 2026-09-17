@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet-semicircle@2.0.4/Semicircle.min.js"></script>
+    <style>
+        html, body, #map { height: 100%; width: 100%; margin: 0; padding: 0; background: #1a1a1a; }
+
+        .custom-map-btn {
+            background: white; border: 2px solid rgba(0,0,0,0.2); border-radius: 4px;
+            width: 36px; height: 36px; line-height: 36px; text-align: center;
+            font-size: 18px; font-weight: bold; cursor: pointer; color: #333;
+            margin-bottom: 5px; box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+        }
+        .custom-map-btn.active { background: #00CC66; color: white; border-color: #009944; }
+
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 44px; height: 44px; pointer-events: none; z-index: 1000;
+            display: block;
+        }
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: rgba(255, 51, 51, 0.9);
+        }
+        #crosshair::before { top: 0; bottom: 0; left: 21px; width: 2px; }
+        #crosshair::after { left: 0; right: 0; top: 21px; height: 2px; }
+
+        #compass-cone {
+            position: absolute; top: 50%; left: 50%;
+            width: 0; height: 0;
+            border-left: 25px solid transparent;
+            border-right: 25px solid transparent;
+            border-bottom: 70px solid rgba(0, 204, 102, 0.4);
+            transform-origin: 50% 100%;
+            transform: translate(-50%, -100%) rotate(0deg);
+            pointer-events: none; z-index: 999;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="crosshair"></div>
+    <div id="compass-cone"></div>
+
+    <script>
+        var stdLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', { maxZoom: 18 });
+        var photoLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', { maxZoom: 18 });
+        var map = L.map('map', { center: [34.722690, 135.017698], zoom: 17, layers: [stdLayer], zoomControl: false });
+        L.control.zoom({position: 'topleft'}).addTo(map);
+        L.control.layers({"標準地図": stdLayer, "衛星写真": photoLayer}, null, { position: 'topright' }).addTo(map);
+
+        var ActionControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function (map) {
+                var container = L.DomUtil.create('div', '');
+
+                // ★ パン（自動追従）スイッチ
+                var gpsBtn = L.DomUtil.create('div', 'custom-map-btn gps-btn', container);
+                gpsBtn.innerHTML = '◎';
+                gpsBtn.title = "現在地を追従";
+                L.DomEvent.on(gpsBtn, 'click', function(e) {
+                    L.DomEvent.stopPropagation(e);
+                    var isTracking = gpsBtn.classList.contains('active');
+                    Android.setMapAutoPan(!isTracking);
+                });
+
+                var jumpBtn = L.DomUtil.create('div', 'custom-map-btn', container);
+                jumpBtn.innerHTML = '📍';
+                jumpBtn.title = "選択中の写真へ移動";
+                L.DomEvent.on(jumpBtn, 'click', function(e) {
+                    L.DomEvent.stopPropagation(e);
+                    Android.jumpToSelectedPhoto();
+                });
+
+                return container;
+            }
+        });
+        map.addControl(new ActionControl());
+
+        // ★ 地図を手動でスクロールしたら「追従のみ」をOFFにする (GPS自体は切らない)
+        map.on('dragstart', function() {
+            var btn = document.querySelector('.gps-btn');
+            if (btn && btn.classList.contains('active')) {
+                btn.classList.remove('active');
+                Android.disableAutoPan();
+            }
+        });
+
+        var markerLayer = L.layerGroup().addTo(map);
+        var isCameraModeActive = false;
+
+        function setGpsButtonActive(isActive) {
+            var btn = document.querySelector('.gps-btn');
+            if (!btn) return;
+            if (isActive) btn.classList.add('active');
+            else btn.classList.remove('active');
+        }
+
+        function moveToGpsLocation(lat, lng) {
+            map.panTo([lat, lng], { animate: true, duration: 0.3 });
+        }
+
+        function toggleCameraMode(isCamera) {
+            isCameraModeActive = isCamera;
+            var compass = document.getElementById('compass-cone');
+            if (isCamera) {
+                compass.style.display = 'block';
+                markerLayer.clearLayers();
+            } else {
+                compass.style.display = 'none';
+            }
+        }
+
+        function updateCameraCrosshairDir(trueAzimuth) {
+            if (!isCameraModeActive) return;
+            var compass = document.getElementById('compass-cone');
+            compass.style.transform = 'translate(-50%, -100%) rotate(' + trueAzimuth + 'deg)';
+        }
+
+        function getCrosshairLocation() {
+            var center = map.getCenter();
+            return JSON.stringify({ lat: center.lat, lng: center.lng });
+        }
+
+        function getMapCenterAndZoom() {
+            var center = map.getCenter();
+            return JSON.stringify({ lat: center.lat, lng: center.lng, zoom: map.getZoom() });
+        }
+
+        function updatePoints(targetLat, targetLon, hasCoords, allPointsJson, currentIndex) {
+            if (isCameraModeActive) return;
+            markerLayer.clearLayers();
+            var points = JSON.parse(allPointsJson);
+
+            points.forEach(function(p) {
+                if (p.hasGps && !p.isCurrent) {
+                    L.circleMarker([p.lat, p.lon], { radius: 7, color: '#ff3333', fillColor: '#ff0000', fillOpacity: 0.85, weight: 2 }).addTo(markerLayer);
+                    var hitArea = L.circleMarker([p.lat, p.lon], { radius: 22, opacity: 0, fillOpacity: 0 }).addTo(markerLayer);
+                    hitArea.on('click', function() { Android.onMarkerClicked(p.index); });
+                }
+            });
+
+            if (hasCoords) {
+                var currentPoint = points.find(p => p.isCurrent);
+                if (currentPoint && currentPoint.dir !== undefined && currentPoint.dir !== null && currentPoint.dir >= 0) {
+                    L.semiCircle([targetLat, targetLon], {
+                        radius: 40, weight: 0, color: '#ff3333', fillColor: '#ff3333', fillOpacity: 0.35,
+                        startAngle: currentPoint.dir - 30, stopAngle: currentPoint.dir + 30
+                    }).addTo(markerLayer);
+                }
+                L.circleMarker([targetLat, targetLon], { radius: 10, color: '#ffffff', fillColor: '#0066ff', fillOpacity: 0.95, weight: 3 }).addTo(markerLayer);
+                var currentHit = L.circleMarker([targetLat, targetLon], { radius: 24, opacity: 0, fillOpacity: 0 }).addTo(markerLayer);
+                currentHit.on('click', function() { Android.onMarkerClicked(currentIndex); });
+                map.panTo([targetLat, targetLon], { animate: true, duration: 0.4 });
+            }
+        }
+    </script>
+</body>
+</html>
